@@ -1,0 +1,24 @@
+# Changelog
+
+All notable changes to this project are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) where applicable.
+
+## [Unreleased]
+
+### Added
+
+- **My Fleet** (`GET /my-fleet`): track fleet slots (hub, aircraft type, quantity, label) in SQLite and optionally assign slots to extracted `route_aircraft` rows; HTMX API under `/api/fleet/*` and JSON at `/api/fleet/json`.
+- Schema tables **`fleet_aircraft`** and **`fleet_route_assignment`** (see `database/schema.py` and `PRD/am4-routemine-FLEET-SPEC.md`).
+- **`CHANGELOG.md`** (this file).
+
+### Changed
+
+- **Dashboard** replaced **Streamlit** with **FastAPI**, **Jinja2**, **HTMX**, and **Tailwind** (CDN). Entry module: `dashboard.server:app`; dependencies in `pyproject.toml` / `requirements.txt` (`fastapi`, `uvicorn`, `jinja2`, `python-multipart`, etc.).
+- `python main.py dashboard` now serves **uvicorn** on **`0.0.0.0:8000`** by default (was Streamlit on port **8501**). New flag **`--host`**.
+- **`v_best_routes`** view is recreated on schema apply and includes **`income_per_ac_day`** (see `database/schema.py`).
+- **README** updated for the new stack, PRD paths, dashboard routes, and `AM4_ROUTEMINE_DB`.
+
+### Removed
+
+- **`dashboard/app.py`** (Streamlit app).

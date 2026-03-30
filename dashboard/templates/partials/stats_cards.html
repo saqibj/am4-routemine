@@ -1,0 +1,40 @@
+{% if scope == 'global' %}
+<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+    <div class="bg-gray-800 rounded-lg border border-gray-700 p-4 shadow-lg">
+        <p class="text-gray-400 text-xs uppercase tracking-wider">Routes</p>
+        <p class="text-2xl font-bold font-mono text-emerald-400">{{ "{:,}".format(stats.routes or 0) }}</p>
+    </div>
+    <div class="bg-gray-800 rounded-lg border border-gray-700 p-4 shadow-lg">
+        <p class="text-gray-400 text-xs uppercase tracking-wider">Hubs</p>
+        <p class="text-2xl font-bold font-mono text-gray-100">{{ "{:,}".format(stats.hubs or 0) }}</p>
+    </div>
+    <div class="bg-gray-800 rounded-lg border border-gray-700 p-4 shadow-lg">
+        <p class="text-gray-400 text-xs uppercase tracking-wider">Aircraft</p>
+        <p class="text-2xl font-bold font-mono text-gray-100">{{ "{:,}".format(stats.aircraft or 0) }}</p>
+    </div>
+    <div class="bg-gray-800 rounded-lg border border-gray-700 p-4 shadow-lg">
+        <p class="text-gray-400 text-xs uppercase tracking-wider">DB size</p>
+        <p class="text-xl font-bold font-mono text-gray-100">
+            {% if db_size_bytes is not none %}
+            {{ "{:,}".format(db_size_bytes // 1024) }} KB
+            {% else %}—{% endif %}
+        </p>
+        <p class="text-gray-500 text-xs mt-1">Last: {{ stats.last_extract or '—' }}</p>
+    </div>
+</div>
+{% else %}
+<div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+    <div class="bg-gray-800 rounded-lg border border-gray-700 p-4 shadow-lg">
+        <p class="text-gray-400 text-xs uppercase tracking-wider">Viable routes</p>
+        <p class="text-2xl font-bold font-mono text-gray-100">{{ stats.n or 0 }}</p>
+    </div>
+    <div class="bg-gray-800 rounded-lg border border-gray-700 p-4 shadow-lg">
+        <p class="text-gray-400 text-xs uppercase tracking-wider">Avg profit / day</p>
+        <p class="text-2xl font-bold font-mono text-emerald-400">${{ "{:,.0f}".format(stats.avg_profit or 0) }}</p>
+    </div>
+    <div class="bg-gray-800 rounded-lg border border-gray-700 p-4 shadow-lg">
+        <p class="text-gray-400 text-xs uppercase tracking-wider">Best profit / day</p>
+        <p class="text-2xl font-bold font-mono text-emerald-300">${{ "{:,.0f}".format(stats.best_profit or 0) }}</p>
+    </div>
+</div>
+{% endif %}

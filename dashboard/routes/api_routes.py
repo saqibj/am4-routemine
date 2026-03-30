@@ -1,0 +1,1284 @@
+"""HTMX fragments and JSON API under /api/* (per PRD)."""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+
+from fastapi import APIRouter, Form, Query, Request
+from fastapi.responses import HTMLResponse
+
+from dashboard.db import DB_PATH, fetch_all, fetch_one, get_db
+from dashboard.server import templates
+
+router = APIRouter(prefix="/api", tags=["api"])
+
+HUB_SORT_COLUMNS = {
+    "profit_per_ac_day",
+    "profit_per_trip",
+    "contribution",
+    "income_per_ac_day",
+    "destination",
+    "aircraft",
+    "distance_km",
+    "flight_time_hrs",
+    "trips_per_day",
+    "hub",
+    "ac_type",
+}
+
+
+def _hub_order(sort_col: str) -> str:
+    if sort_col in ("destination", "aircraft", "hub", "dest_country", "ac_type"):
+        return f"{sort_col} COLLATE NOCASE ASC"
+    return f"{sort_col} DESC"
+
+
+AC_SORT = {"profit_per_ac_day", "contribution", "destination", "hub"}
+
+
+def _ac_order(sort_col: str) -> str:
+    if sort_col in ("destination", "hub"):
+        return f"{sort_col} COLLATE NOCASE ASC"
+    return f"{sort_col} DESC"
+
+
+ROUTE_SORT = {
+    "profit_per_ac_day",
+    "contribution",
+    "flight_time_hrs",
+    "trips_per_day",
+    "shortname",
+}
+
+
+def _route_order(sort_col: str) -> str:
+    if sort_col == "shortname":
+        return "ac.shortname COLLATE NOCASE ASC"
+    return f"ra.{sort_col} DESC"
+
+
+CONTRIB_SORT = {
+    "contribution",
+    "profit_per_ac_day",
+    "contrib_ratio",
+    "hub",
+    "destination",
+    "aircraft",
+}
+
+
+def _contrib_order(sort_col: str) -> str:
+    if sort_col in ("hub", "destination", "aircraft"):
+        return f"{sort_col} COLLATE NOCASE ASC"
+    return f"{sort_col} DESC"
+
+
+def _truthy_stopover_hide(v: str) -> bool:
+    return v in ("1", "on", "true", "yes")
+
+
+@router.get("/hub-routes", response_class=HTMLResponse)
+def api_hub_routes(
+    request: Request,
+    hub: str = Query(""),
+    filter_type: str = Query("", alias="type"),
+    ac_type: str = Query(""),
+    sort: str = Query("profit_per_ac_day"),
+    limit: int = Query(50, ge=1, le=5000),
+    min_profit: float = Query(0.0),
+    max_dist: float = Query(0.0),
+    max_flight_hrs: float = Query(0.0),
+    hide_stopovers: str = Query(""),
+):
+    atype = filter_type.strip() or ac_type.strip()
+    if not hub.strip():
+        return HTMLResponse("<p class='text-gray-400'>Select a hub.</p>")
+
+    sort_col = sort if sort in HUB_SORT_COLUMNS else "profit_per_ac_day"
+    order_sql = _hub_order(sort_col)
+
+    query = "SELECT * FROM v_best_routes WHERE hub = ?"
+    params: list = [hub.strip()]
+
+    if atype:
+        query += " AND UPPER(ac_type) = UPPER(?)"
+        params.append(atype)
+
+    query += " AND profit_per_ac_day >= ?"
+    params.append(min_profit)
+
+    if max_dist > 0:
+        query += " AND distance_km <= ?"
+        params.append(max_dist)
+
+    if max_flight_hrs > 0:
+        query += " AND flight_time_hrs <= ?"
+        params.append(max_flight_hrs)
+
+    if _truthy_stopover_hide(hide_stopovers):
+        query += " AND needs_stopover = 0"
+
+    query += f" ORDER BY {order_sql} LIMIT ?"
+    params.append(limit)
+
+    conn = get_db()
+    try:
+        routes = fetch_all(conn, query, params)
+    finally:
+        conn.close()
+
+    return templates.TemplateResponse(
+        request,
+        "partials/route_table.html",
+        {"routes": routes, "sort": sort_col},
+    )
+
+
+@router.get("/hub-summary", response_class=HTMLResponse)
+def api_hub_summary(
+    request: Request,
+    hub: str = Query(""),
+    filter_type: str = Query("", alias="type"),
+    ac_type: str = Query(""),
+    min_profit: float = Query(0.0),
+    max_dist: float = Query(0.0),
+    max_flight_hrs: float = Query(0.0),
+    hide_stopovers: str = Query(""),
+):
+    atype = filter_type.strip() or ac_type.strip()
+    if not hub.strip():
+        return HTMLResponse("")
+
+    q = """
+        SELECT COUNT(*) AS n,
+               AVG(profit_per_ac_day) AS avg_profit,
+               MAX(profit_per_ac_day) AS best_profit
+        FROM v_best_routes WHERE hub = ?
+    """
+    params: list = [hub.strip()]
+    if atype:
+        q += " AND UPPER(ac_type) = UPPER(?)"
+        params.append(atype)
+    q += " AND profit_per_ac_day >= ?"
+    params.append(min_profit)
+    if max_dist > 0:
+        q += " AND distance_km <= ?"
+        params.append(max_dist)
+    if max_flight_hrs > 0:
+        q += " AND flight_time_hrs <= ?"
+        params.append(max_flight_hrs)
+    if _truthy_stopover_hide(hide_stopovers):
+        q += " AND needs_stopover = 0"
+
+    conn = get_db()
+    try:
+        row = fetch_one(conn, q, params)
+    finally:
+        conn.close()
+
+    if not row:
+        return HTMLResponse("")
+    return templates.TemplateResponse(
+        request,
+        "partials/stats_cards.html",
+        {"scope": "hub", "stats": row},
+    )
+
+
+@router.get("/hub-chart", response_class=HTMLResponse)
+def api_hub_chart(
+    request: Request,
+    hub: str = Query(""),
+    filter_type: str = Query("", alias="type"),
+    ac_type: str = Query(""),
+    min_profit: float = Query(0.0),
+    max_dist: float = Query(0.0),
+    max_flight_hrs: float = Query(0.0),
+    hide_stopovers: str = Query(""),
+    limit: int = Query(20, ge=5, le=100),
+):
+    atype = filter_type.strip() or ac_type.strip()
+    if not hub.strip():
+        return HTMLResponse("<p class='text-gray-400 text-sm'>Select a hub for the chart.</p>")
+
+    query = """
+        SELECT destination, aircraft, profit_per_ac_day FROM v_best_routes
+        WHERE hub = ?
+    """
+    params: list = [hub.strip()]
+    if atype:
+        query += " AND UPPER(ac_type) = UPPER(?)"
+        params.append(atype)
+    query += " AND profit_per_ac_day >= ?"
+    params.append(min_profit)
+    if max_dist > 0:
+        query += " AND distance_km <= ?"
+        params.append(max_dist)
+    if max_flight_hrs > 0:
+        query += " AND flight_time_hrs <= ?"
+        params.append(max_flight_hrs)
+    if _truthy_stopover_hide(hide_stopovers):
+        query += " AND needs_stopover = 0"
+    query += " ORDER BY profit_per_ac_day DESC LIMIT ?"
+    params.append(limit)
+
+    conn = get_db()
+    try:
+        rows = fetch_all(conn, query, params)
+    finally:
+        conn.close()
+
+    labels = [f"{r['destination']} ({r['aircraft']})" for r in rows]
+    values = [float(r["profit_per_ac_day"] or 0) for r in rows]
+
+    return templates.TemplateResponse(
+        request,
+        "partials/chart_data.html",
+        {
+            "chart_id": "hubProfitChart",
+            "labels": labels,
+            "values": values,
+            "label": "Profit/Day ($)",
+        },
+    )
+
+
+@router.get("/aircraft-routes", response_class=HTMLResponse)
+def api_aircraft_routes(
+    request: Request,
+    aircraft: str = Query(""),
+    min_profit: float = Query(0.0),
+    sort: str = Query("profit_per_ac_day"),
+    limit: int = Query(200, ge=1, le=5000),
+):
+    if not aircraft.strip():
+        return HTMLResponse("<p class='text-gray-400'>Select an aircraft.</p>")
+
+    sort_col = sort if sort in AC_SORT else "profit_per_ac_day"
+    order_sql = _ac_order(sort_col)
+    sql = f"""
+        SELECT * FROM v_best_routes
+        WHERE aircraft = ? AND profit_per_ac_day >= ?
+        ORDER BY {order_sql}
+        LIMIT ?
+    """
+    conn = get_db()
+    try:
+        routes = fetch_all(conn, sql, [aircraft.strip(), min_profit, limit])
+    finally:
+        conn.close()
+
+    return templates.TemplateResponse(
+        request,
+        "partials/aircraft_table.html",
+        {"routes": routes, "sort": sort_col},
+    )
+
+
+@router.get("/aircraft-stats", response_class=HTMLResponse)
+def api_aircraft_stats(request: Request, aircraft: str = Query("")):
+    if not aircraft.strip():
+        return HTMLResponse("")
+
+    conn = get_db()
+    try:
+        agg = fetch_one(
+            conn,
+            """
+            SELECT COUNT(*) AS viable_routes,
+                   AVG(profit_per_ac_day) AS avg_profit,
+                   MAX(profit_per_ac_day) AS best_profit
+            FROM v_best_routes WHERE aircraft = ?
+            """,
+            [aircraft.strip()],
+        )
+        best_hub_row = fetch_one(
+            conn,
+            """
+            SELECT hub FROM v_best_routes WHERE aircraft = ?
+            GROUP BY hub ORDER BY MAX(profit_per_ac_day) DESC LIMIT 1
+            """,
+            [aircraft.strip()],
+        )
+    finally:
+        conn.close()
+
+    if not agg:
+        return HTMLResponse("")
+    return templates.TemplateResponse(
+        request,
+        "partials/aircraft_stats.html",
+        {
+            "agg": agg,
+            "best_hub": best_hub_row["hub"] if best_hub_row else "—",
+        },
+    )
+
+
+@router.get("/route-destinations", response_class=HTMLResponse)
+def api_route_destinations(request: Request, origin: str = Query("")):
+    if not origin.strip():
+        return HTMLResponse(
+            "<select name='dest' class='bg-gray-700 border border-gray-600 rounded-md px-3 py-2 text-white w-full max-w-xs' "
+            "disabled><option value=''>Pick origin first</option></select>"
+        )
+
+    conn = get_db()
+    try:
+        rows = fetch_all(
+            conn,
+            """
+            SELECT DISTINCT ad.iata AS iata
+            FROM route_aircraft ra
+            JOIN airports ao ON ra.origin_id = ao.id
+            JOIN airports ad ON ra.dest_id = ad.id
+            WHERE ra.is_valid = 1 AND UPPER(ao.iata) = UPPER(?)
+            AND ad.iata IS NOT NULL AND TRIM(ad.iata) != ''
+            ORDER BY ad.iata
+            """,
+            [origin.strip()],
+        )
+    finally:
+        conn.close()
+
+    options = "".join(f'<option value="{d["iata"]}">{d["iata"]}</option>' for d in rows)
+    return HTMLResponse(
+        f"<select name='dest' class='bg-gray-700 border border-gray-600 rounded-md px-3 py-2 text-white w-full max-w-xs' "
+        f"hx-get='/api/route-compare' hx-trigger='change' "
+        f"hx-target='#route-compare-table' hx-include='#route-analyzer-form' "
+        f"hx-indicator='#route-spinner'><option value=''>Destination…</option>{options}</select>"
+    )
+
+
+@router.get("/route-compare", response_class=HTMLResponse)
+def api_route_compare(
+    request: Request,
+    origin: str = Query(""),
+    dest: str = Query(""),
+    sort: str = Query("profit_per_ac_day"),
+):
+    if not origin.strip() or not dest.strip() or origin.strip().upper() == dest.strip().upper():
+        return HTMLResponse("<p class='text-gray-400'>Choose origin and destination (different airports).</p>")
+
+    sort_col = sort if sort in ROUTE_SORT else "profit_per_ac_day"
+    order_sql = _route_order(sort_col)
+    sql = f"""
+        SELECT ac.shortname, ac.name, ac.type, ac.cost,
+               ra.profit_per_ac_day, ra.trips_per_day, ra.profit_per_trip,
+               ra.config_y, ra.config_j, ra.config_f,
+               ra.ticket_y, ra.ticket_j, ra.ticket_f,
+               ra.flight_time_hrs, ra.distance_km, ra.needs_stopover, ra.contribution
+        FROM route_aircraft ra
+        JOIN airports a0 ON ra.origin_id = a0.id
+        JOIN airports a1 ON ra.dest_id = a1.id
+        JOIN aircraft ac ON ra.aircraft_id = ac.id
+        WHERE ra.is_valid = 1 AND UPPER(a0.iata) = UPPER(?) AND UPPER(a1.iata) = UPPER(?)
+        ORDER BY {order_sql}
+    """
+    conn = get_db()
+    try:
+        rows = fetch_all(conn, sql, [origin.strip(), dest.strip()])
+    finally:
+        conn.close()
+
+    return templates.TemplateResponse(
+        request,
+        "partials/route_compare_table.html",
+        {"rows": rows, "sort": sort_col},
+    )
+
+
+@router.get("/route-chart", response_class=HTMLResponse)
+def api_route_chart(request: Request, origin: str = Query(""), dest: str = Query("")):
+    if not origin.strip() or not dest.strip():
+        return HTMLResponse("")
+
+    sql = """
+        SELECT ac.shortname, ra.profit_per_ac_day
+        FROM route_aircraft ra
+        JOIN airports a0 ON ra.origin_id = a0.id
+        JOIN airports a1 ON ra.dest_id = a1.id
+        JOIN aircraft ac ON ra.aircraft_id = ac.id
+        WHERE ra.is_valid = 1 AND UPPER(a0.iata) = UPPER(?) AND UPPER(a1.iata) = UPPER(?)
+        ORDER BY ra.profit_per_ac_day DESC
+    """
+    conn = get_db()
+    try:
+        data = fetch_all(conn, sql, [origin.strip(), dest.strip()])
+    finally:
+        conn.close()
+
+    if not data:
+        return HTMLResponse("<p class='text-gray-400 text-sm'>No data for this pair.</p>")
+    labels = [r["shortname"] for r in data]
+    values = [float(r["profit_per_ac_day"] or 0) for r in data]
+
+    return templates.TemplateResponse(
+        request,
+        "partials/chart_data.html",
+        {
+            "chart_id": "routeCompareChart",
+            "labels": labels,
+            "values": values,
+            "label": "Profit/Day ($)",
+        },
+    )
+
+
+@router.get("/fleet-plan", response_class=HTMLResponse)
+def api_fleet_plan(
+    request: Request,
+    hub: str = Query(""),
+    budget: int = Query(200_000_000, ge=0),
+    top_n: int = Query(15, ge=1, le=100),
+):
+    if not hub.strip():
+        return HTMLResponse("<p class='text-gray-400'>Select a hub.</p>")
+
+    conn = get_db()
+    try:
+        hub_row = fetch_one(
+            conn,
+            "SELECT id FROM airports WHERE UPPER(iata) = UPPER(?) LIMIT 1",
+            [hub.strip()],
+        )
+        if not hub_row:
+            return HTMLResponse("<p class='text-amber-400'>Unknown hub.</p>")
+        origin_id = hub_row["id"]
+        sql = """
+            SELECT ac.shortname, ac.name, ac.type, ac.cost,
+                   COUNT(*) AS routes,
+                   AVG(ra.profit_per_ac_day) AS avg_daily_profit,
+                   MAX(ra.profit_per_ac_day) AS best_daily_profit
+            FROM route_aircraft ra
+            JOIN aircraft ac ON ra.aircraft_id = ac.id
+            WHERE ra.is_valid = 1 AND ra.origin_id = ? AND ac.cost <= ?
+            GROUP BY ra.aircraft_id
+            ORDER BY avg_daily_profit DESC
+            LIMIT ?
+        """
+        rows = fetch_all(conn, sql, [origin_id, int(budget), top_n])
+    finally:
+        conn.close()
+
+    for r in rows:
+        avg = float(r["avg_daily_profit"] or 0)
+        cost = int(r["cost"] or 0)
+        r["days_to_breakeven"] = round(cost / avg, 1) if avg > 0 and cost > 0 else None
+
+    return templates.TemplateResponse(
+        request,
+        "partials/fleet_plan_table.html",
+        {"rows": rows},
+    )
+
+
+@router.get("/contributions", response_class=HTMLResponse)
+def api_contributions(
+    request: Request,
+    hub: str = Query(""),
+    ac_type: str = Query(""),
+    min_contribution: float = Query(0.0),
+    limit: int = Query(500, ge=10, le=5000),
+    sort: str = Query("contribution"),
+):
+    sort_col = sort if sort in CONTRIB_SORT else "contribution"
+    inner = """
+        SELECT *,
+            CASE
+                WHEN profit_per_ac_day IS NOT NULL AND ABS(profit_per_ac_day) > 1e-9
+                THEN contribution / profit_per_ac_day
+                ELSE NULL
+            END AS contrib_ratio
+        FROM v_best_routes
+        WHERE contribution >= ?
+    """
+    params: list = [min_contribution]
+    if hub.strip():
+        inner += " AND hub = ?"
+        params.append(hub.strip())
+    if ac_type.strip():
+        inner += " AND UPPER(ac_type) = UPPER(?)"
+        params.append(ac_type.strip())
+    order_sql = _contrib_order(sort_col)
+    query = f"SELECT * FROM ({inner}) AS t ORDER BY {order_sql} LIMIT ?"
+    params.append(limit)
+
+    conn = get_db()
+    try:
+        rows = fetch_all(conn, query, params)
+    finally:
+        conn.close()
+
+    return templates.TemplateResponse(
+        request,
+        "partials/contributions_table.html",
+        {"rows": rows, "sort": sort_col},
+    )
+
+
+@router.get("/heatmap-data")
+def api_heatmap_data(hub: str = Query(""), top_n: int = Query(100, ge=10, le=500)) -> list[dict]:
+    if not hub.strip():
+        return []
+
+    sql = """
+        SELECT ap.iata AS iata, ap.name AS name, ap.lat AS lat, ap.lng AS lng,
+               MAX(ra.profit_per_ac_day) AS profit_per_ac_day,
+               GROUP_CONCAT(DISTINCT ac.shortname) AS aircraft_sample
+        FROM route_aircraft ra
+        JOIN airports orig ON ra.origin_id = orig.id
+        JOIN airports ap ON ra.dest_id = ap.id
+        JOIN aircraft ac ON ra.aircraft_id = ac.id
+        WHERE ra.is_valid = 1 AND UPPER(orig.iata) = UPPER(?)
+        AND ap.lat IS NOT NULL AND ap.lng IS NOT NULL
+        GROUP BY ap.id
+        ORDER BY profit_per_ac_day DESC
+        LIMIT ?
+    """
+    conn = get_db()
+    try:
+        rows = fetch_all(conn, sql, [hub.strip(), top_n])
+    finally:
+        conn.close()
+
+    profits = [float(r["profit_per_ac_day"] or 0) for r in rows]
+    p_min, p_max = (min(profits), max(profits)) if profits else (0.0, 1.0)
+    span = p_max - p_min if p_max > p_min else 1.0
+
+    out = []
+    for r in rows:
+        p = float(r["profit_per_ac_day"] or 0)
+        t = (p - p_min) / span
+        out.append(
+            {
+                "lat": float(r["lat"]),
+                "lng": float(r["lng"]),
+                "iata": r["iata"],
+                "name": r["name"] or "",
+                "profit": p,
+                "aircraft": r["aircraft_sample"] or "",
+                "t": t,
+            }
+        )
+    return out
+
+
+@router.get("/heatmap-panel", response_class=HTMLResponse)
+def api_heatmap_panel(request: Request, hub: str = Query(""), top_n: int = Query(100, ge=10, le=500)):
+    """HTML+script panel driven by /api/heatmap-data JSON (same shape as inline markers)."""
+    if not hub.strip():
+        return HTMLResponse("<p class='text-gray-400 p-4'>Select a hub.</p>")
+
+    conn = get_db()
+    try:
+        rows = fetch_all(
+            conn,
+            """
+            SELECT ap.iata AS iata, ap.name AS name, ap.lat AS lat, ap.lng AS lng,
+                   MAX(ra.profit_per_ac_day) AS profit_per_ac_day,
+                   GROUP_CONCAT(DISTINCT ac.shortname) AS aircraft_sample
+            FROM route_aircraft ra
+            JOIN airports orig ON ra.origin_id = orig.id
+            JOIN airports ap ON ra.dest_id = ap.id
+            JOIN aircraft ac ON ra.aircraft_id = ac.id
+            WHERE ra.is_valid = 1 AND UPPER(orig.iata) = UPPER(?)
+            AND ap.lat IS NOT NULL AND ap.lng IS NOT NULL
+            GROUP BY ap.id
+            ORDER BY profit_per_ac_day DESC
+            LIMIT ?
+            """,
+            [hub.strip(), top_n],
+        )
+    finally:
+        conn.close()
+
+    if not rows:
+        return HTMLResponse("<p class='text-gray-400 p-4'>No geocoded destinations for this hub.</p>")
+
+    profits = [float(r["profit_per_ac_day"] or 0) for r in rows]
+    p_min, p_max = min(profits), max(profits)
+    span = p_max - p_min if p_max > p_min else 1.0
+    markers = []
+    for r in rows:
+        p = float(r["profit_per_ac_day"] or 0)
+        t = (p - p_min) / span
+        markers.append(
+            {
+                "lat": float(r["lat"]),
+                "lng": float(r["lng"]),
+                "iata": r["iata"],
+                "name": r["name"] or "",
+                "profit": p,
+                "aircraft": r["aircraft_sample"] or "",
+                "t": t,
+            }
+        )
+    payload = json.dumps(markers)
+    html = f"""
+<div class="rounded-lg border border-gray-700 overflow-hidden">
+  <div id="routemine-leaflet-map" class="h-[600px] w-full bg-gray-800"></div>
+</div>
+<script type="application/json" id="routemine-leaflet-data">{payload}</script>
+<script>
+(function() {{
+  const el = document.getElementById("routemine-leaflet-map");
+  const raw = document.getElementById("routemine-leaflet-data");
+  if (!el || !raw) return;
+  const markers = JSON.parse(raw.textContent);
+  if (window.__routemineMap) {{
+    try {{ window.__routemineMap.remove(); }} catch (e) {{}}
+    window.__routemineMap = null;
+  }}
+  const center = markers.length ? [markers[0].lat, markers[0].lng] : [20, 0];
+  const map = L.map(el).setView(center, markers.length ? 4 : 2);
+  window.__routemineMap = map;
+  L.tileLayer('https://{{s}}.basemaps.cartocdn.com/dark_all/{{z}}/{{x}}/{{y}}{{r}}.png', {{
+    attribution: '&copy; CartoDB',
+  }}).addTo(map);
+  function color(t) {{
+    const r = Math.round(255 * (1 - t));
+    const g = Math.round(200 * t);
+    return `rgb(${{r}},${{g}},80)`;
+  }}
+  const bounds = [];
+  markers.forEach(m => {{
+    const c = color(m.t);
+    const mk = L.circleMarker([m.lat, m.lng], {{
+      radius: 8,
+      fillColor: c,
+      color: '#1f2937',
+      weight: 1,
+      fillOpacity: 0.85,
+    }}).addTo(map);
+    const profit = Math.round(m.profit).toLocaleString();
+    mk.bindPopup(
+      `<strong>${{m.iata}}</strong> ${{m.name ? '(' + m.name + ')' : ''}}<br/>` +
+      `Profit/day: $${{profit}}<br/>` +
+      `<span class="text-gray-500 text-xs">${{(m.aircraft || '').slice(0,120)}}</span>`
+    );
+    bounds.push([m.lat, m.lng]);
+  }});
+  if (bounds.length) map.fitBounds(bounds, {{ padding: [40, 40], maxZoom: 8 }});
+}})();
+</script>
+<p class="text-gray-400 text-sm mt-2">{len(markers)} destinations (top by best aircraft profit).</p>
+"""
+    return HTMLResponse(html)
+
+
+@router.get("/stats", response_class=HTMLResponse)
+def api_stats(request: Request):
+    try:
+        conn = get_db()
+        try:
+            row = fetch_one(
+                conn,
+                """
+                SELECT COUNT(*) AS routes,
+                       COUNT(DISTINCT origin_id) AS hubs,
+                       COUNT(DISTINCT aircraft_id) AS aircraft,
+                       MAX(extracted_at) AS last_extract
+                FROM route_aircraft WHERE is_valid = 1
+                """,
+            )
+        finally:
+            conn.close()
+    except FileNotFoundError:
+        row = {"routes": 0, "hubs": 0, "aircraft": 0, "last_extract": None}
+
+    from pathlib import Path
+
+    p = Path(DB_PATH)
+    db_size = p.stat().st_size if p.exists() else None
+
+    return templates.TemplateResponse(
+        request,
+        "partials/stats_cards.html",
+        {"scope": "global", "stats": row, "db_size_bytes": db_size},
+    )
+
+
+@router.get("/hubs")
+def api_hubs() -> list[dict]:
+    try:
+        conn = get_db()
+        try:
+            rows = fetch_all(
+                conn,
+                """
+                SELECT DISTINCT a.iata AS iata, a.name AS name
+                FROM route_aircraft ra
+                JOIN airports a ON ra.origin_id = a.id
+                WHERE ra.is_valid = 1 AND a.iata IS NOT NULL AND TRIM(a.iata) != ''
+                ORDER BY a.iata
+                """,
+            )
+        finally:
+            conn.close()
+    except FileNotFoundError:
+        rows = []
+    return rows
+
+
+@router.get("/aircraft-list")
+def api_aircraft_list() -> list[dict]:
+    try:
+        conn = get_db()
+        try:
+            rows = fetch_all(
+                conn,
+                "SELECT shortname, name, type, cost FROM aircraft ORDER BY shortname",
+            )
+        finally:
+            conn.close()
+    except FileNotFoundError:
+        rows = []
+    return rows
+
+
+def _hub_filter_sql(
+    hub: str,
+    atype: str,
+    min_profit: float,
+    max_dist: float,
+    max_flight_hrs: float,
+    hide_stop: bool,
+) -> tuple[str, list]:
+    query = "SELECT * FROM v_best_routes WHERE hub = ?"
+    params: list = [hub]
+    if atype:
+        query += " AND UPPER(ac_type) = UPPER(?)"
+        params.append(atype)
+    query += " AND profit_per_ac_day >= ?"
+    params.append(min_profit)
+    if max_dist > 0:
+        query += " AND distance_km <= ?"
+        params.append(max_dist)
+    if max_flight_hrs > 0:
+        query += " AND flight_time_hrs <= ?"
+        params.append(max_flight_hrs)
+    if hide_stop:
+        query += " AND needs_stopover = 0"
+    return query, params
+
+
+@router.get("/chart/profit-by-aircraft")
+def chart_profit_by_aircraft(
+    hub: str = Query(""),
+    limit: int = Query(20, ge=5, le=100),
+    filter_type: str = Query("", alias="type"),
+) -> dict:
+    if not hub.strip():
+        return {"labels": [], "data": []}
+    q, params = _hub_filter_sql(hub.strip(), filter_type.strip(), 0.0, 0.0, 0.0, False)
+    q += " ORDER BY profit_per_ac_day DESC LIMIT ?"
+    params.append(limit)
+    conn = get_db()
+    try:
+        rows = fetch_all(conn, q, params)
+    finally:
+        conn.close()
+    labels = [f"{r['aircraft']}" for r in rows]
+    data = [float(r["profit_per_ac_day"] or 0) for r in rows]
+    return {"labels": labels, "data": data}
+
+
+@router.get("/chart/profit-by-distance")
+def chart_profit_by_distance(
+    hub: str = Query(""),
+    filter_type: str = Query("", alias="type"),
+) -> dict:
+    if not hub.strip():
+        return {"labels": [], "data": []}
+    q, params = _hub_filter_sql(hub.strip(), filter_type.strip(), 0.0, 0.0, 0.0, False)
+    q += " ORDER BY distance_km ASC LIMIT 200"
+    conn = get_db()
+    try:
+        rows = fetch_all(conn, q, params)
+    finally:
+        conn.close()
+    labels = [f"{int(r['distance_km'] or 0)} km" for r in rows]
+    data = [float(r["profit_per_ac_day"] or 0) for r in rows]
+    return {"labels": labels, "data": data}
+
+
+@router.get("/chart/haul-breakdown")
+def chart_haul_breakdown(
+    hub: str = Query(""),
+    filter_type: str = Query("", alias="type"),
+) -> dict:
+    if not hub.strip():
+        return {"short": 0, "medium": 0, "long": 0}
+    q, params = _hub_filter_sql(hub.strip(), filter_type.strip(), 0.0, 0.0, 0.0, False)
+    conn = get_db()
+    try:
+        rows = fetch_all(conn, q, params)
+    finally:
+        conn.close()
+    short = medium = long_ = 0
+    for r in rows:
+        d = float(r["distance_km"] or 0)
+        if d < 3000:
+            short += 1
+        elif d < 7000:
+            medium += 1
+        else:
+            long_ += 1
+    return {"short": short, "medium": medium, "long": long_}
+
+
+@router.get("/aircraft-chart", response_class=HTMLResponse)
+def api_aircraft_chart(
+    request: Request,
+    aircraft: str = Query(""),
+    min_profit: float = Query(0.0),
+    limit: int = Query(25, ge=5, le=100),
+):
+    if not aircraft.strip():
+        return HTMLResponse("<p class='text-gray-400 text-sm'>Select an aircraft.</p>")
+    sql = """
+        SELECT hub, AVG(profit_per_ac_day) AS avg_p
+        FROM v_best_routes
+        WHERE aircraft = ? AND profit_per_ac_day >= ?
+        GROUP BY hub
+        ORDER BY avg_p DESC
+        LIMIT ?
+    """
+    conn = get_db()
+    try:
+        rows = fetch_all(conn, sql, [aircraft.strip(), min_profit, limit])
+    finally:
+        conn.close()
+    labels = [str(r["hub"]) for r in rows]
+    values = [float(r["avg_p"] or 0) for r in rows]
+    return templates.TemplateResponse(
+        request,
+        "partials/chart_data.html",
+        {
+            "chart_id": "aircraftHubChart",
+            "labels": labels,
+            "values": values,
+            "label": "Avg profit/day by hub ($)",
+        },
+    )
+
+
+def _airline_est_profit_from_my_routes(conn) -> float:
+    row = fetch_one(
+        conn,
+        """
+        WITH best AS (
+            SELECT origin_id, dest_id, aircraft_id, MAX(profit_per_ac_day) AS p
+            FROM route_aircraft
+            WHERE is_valid = 1
+            GROUP BY origin_id, dest_id, aircraft_id
+        )
+        SELECT COALESCE(SUM(mr.num_assigned * best.p), 0) AS est
+        FROM my_routes mr
+        JOIN best ON best.origin_id = mr.origin_id
+            AND best.dest_id = mr.dest_id
+            AND best.aircraft_id = mr.aircraft_id
+        """,
+    )
+    return float(row["est"] or 0) if row else 0.0
+
+
+def _my_fleet_rows(conn) -> list[dict]:
+    return fetch_all(
+        conn,
+        """
+        SELECT id, shortname, ac_name, quantity, notes
+        FROM v_my_fleet
+        ORDER BY shortname COLLATE NOCASE
+        """,
+    )
+
+
+def _my_routes_rows(conn) -> list[dict]:
+    return fetch_all(
+        conn,
+        """
+        SELECT mr.id,
+               ho.iata AS hub,
+               hd.iata AS destination,
+               ac.shortname AS aircraft,
+               mr.num_assigned,
+               mr.notes,
+               best.p AS profit_per_ac_day,
+               best.dkm AS distance_km
+        FROM my_routes mr
+        JOIN airports ho ON mr.origin_id = ho.id
+        JOIN airports hd ON mr.dest_id = hd.id
+        JOIN aircraft ac ON mr.aircraft_id = ac.id
+        LEFT JOIN (
+            SELECT origin_id, dest_id, aircraft_id,
+                   MAX(profit_per_ac_day) AS p,
+                   MAX(distance_km) AS dkm
+            FROM route_aircraft
+            WHERE is_valid = 1
+            GROUP BY origin_id, dest_id, aircraft_id
+        ) best ON best.origin_id = mr.origin_id
+            AND best.dest_id = mr.dest_id
+            AND best.aircraft_id = mr.aircraft_id
+        ORDER BY hub COLLATE NOCASE, destination COLLATE NOCASE, aircraft COLLATE NOCASE
+        """,
+    )
+
+
+@router.get("/fleet/inventory", response_class=HTMLResponse)
+def api_fleet_inventory(request: Request):
+    try:
+        conn = get_db()
+        try:
+            fleets = _my_fleet_rows(conn)
+        finally:
+            conn.close()
+    except FileNotFoundError:
+        fleets = []
+    except sqlite3.OperationalError:
+        fleets = []
+    return templates.TemplateResponse(
+        request,
+        "partials/fleet_inventory.html",
+        {"fleets": fleets},
+    )
+
+
+@router.get("/fleet/summary", response_class=HTMLResponse)
+def api_fleet_summary(request: Request):
+    try:
+        conn = get_db()
+        try:
+            row = fetch_one(
+                conn,
+                """
+                SELECT COUNT(*) AS types, COALESCE(SUM(quantity), 0) AS planes
+                FROM my_fleet
+                """,
+            )
+            est = _airline_est_profit_from_my_routes(conn)
+            rc = fetch_one(conn, "SELECT COUNT(*) AS c FROM my_routes")
+            route_rows = int(rc["c"] or 0) if rc else 0
+        finally:
+            conn.close()
+    except FileNotFoundError:
+        row = {"types": 0, "planes": 0}
+        est = 0.0
+        route_rows = 0
+    except sqlite3.OperationalError:
+        row = {"types": 0, "planes": 0}
+        est = 0.0
+        route_rows = 0
+    stats = {
+        "types": int(row["types"] or 0) if row else 0,
+        "planes": int(row["planes"] or 0) if row else 0,
+        "est_profit": est,
+        "route_rows": route_rows,
+    }
+    return templates.TemplateResponse(
+        request,
+        "partials/fleet_summary.html",
+        {"stats": stats},
+    )
+
+
+@router.post("/fleet/add", response_class=HTMLResponse)
+def api_fleet_add(
+    request: Request,
+    aircraft: str = Form(""),
+    quantity: int = Form(1),
+    notes: str = Form(""),
+):
+    msg: str | None = None
+    try:
+        conn = get_db()
+        try:
+            ac = fetch_one(
+                conn,
+                "SELECT id FROM aircraft WHERE LOWER(TRIM(shortname)) = LOWER(TRIM(?)) LIMIT 1",
+                [aircraft.strip()],
+            )
+            if not ac or not ac.get("id"):
+                msg = "Unknown aircraft shortname."
+            else:
+                q = int(quantity) if quantity else 1
+                q = max(1, min(999, q))
+                conn.execute(
+                    """
+                    INSERT INTO my_fleet (aircraft_id, quantity, notes, updated_at)
+                    VALUES (?, ?, ?, datetime('now'))
+                    ON CONFLICT(aircraft_id) DO UPDATE SET
+                        quantity = excluded.quantity,
+                        notes = COALESCE(excluded.notes, my_fleet.notes),
+                        updated_at = datetime('now')
+                    """,
+                    (int(ac["id"]), q, notes.strip() or None),
+                )
+                conn.commit()
+        finally:
+            conn.close()
+    except FileNotFoundError:
+        msg = "Database not found."
+    except sqlite3.OperationalError:
+        msg = "Database missing my_fleet table — run extract or upgrade schema."
+
+    try:
+        conn = get_db()
+        try:
+            fleets = _my_fleet_rows(conn)
+        finally:
+            conn.close()
+    except FileNotFoundError:
+        fleets = []
+
+    ctx: dict = {"fleets": fleets}
+    if msg:
+        ctx["flash_err"] = msg
+    else:
+        ctx["flash"] = "Saved fleet row."
+    return templates.TemplateResponse(request, "partials/fleet_inventory.html", ctx)
+
+
+@router.post("/fleet/delete", response_class=HTMLResponse)
+def api_fleet_delete(request: Request, fleet_id: int = Form(...)):
+    try:
+        conn = get_db()
+        try:
+            conn.execute("DELETE FROM my_fleet WHERE id = ?", (int(fleet_id),))
+            conn.commit()
+        finally:
+            conn.close()
+    except FileNotFoundError:
+        return templates.TemplateResponse(
+            request,
+            "partials/fleet_inventory.html",
+            {"fleets": [], "flash_err": "Database not found."},
+        )
+
+    try:
+        conn = get_db()
+        try:
+            fleets = _my_fleet_rows(conn)
+        finally:
+            conn.close()
+    except FileNotFoundError:
+        fleets = []
+    return templates.TemplateResponse(
+        request,
+        "partials/fleet_inventory.html",
+        {"fleets": fleets, "flash": "Removed aircraft type from fleet."},
+    )
+
+
+@router.get("/fleet/json")
+def api_fleet_json() -> list[dict]:
+    try:
+        conn = get_db()
+        try:
+            rows = _my_fleet_rows(conn)
+        finally:
+            conn.close()
+    except FileNotFoundError:
+        return []
+    return [
+        {
+            "id": r["id"],
+            "shortname": r["shortname"],
+            "ac_name": r["ac_name"],
+            "quantity": r["quantity"],
+            "notes": r["notes"],
+        }
+        for r in rows
+    ]
+
+
+# --- My routes (my_routes table) ---
+
+
+@router.get("/routes/inventory", response_class=HTMLResponse)
+def api_routes_inventory(request: Request):
+    try:
+        conn = get_db()
+        try:
+            routes = _my_routes_rows(conn)
+        finally:
+            conn.close()
+    except FileNotFoundError:
+        routes = []
+    except sqlite3.OperationalError:
+        routes = []
+    return templates.TemplateResponse(
+        request,
+        "partials/my_routes_inventory.html",
+        {"routes": routes},
+    )
+
+
+@router.get("/routes/summary", response_class=HTMLResponse)
+def api_routes_summary(request: Request):
+    try:
+        conn = get_db()
+        try:
+            row = fetch_one(
+                conn,
+                """
+                SELECT COUNT(*) AS nrows, COALESCE(SUM(num_assigned), 0) AS assigned
+                FROM my_routes
+                """,
+            )
+            est = _airline_est_profit_from_my_routes(conn)
+        finally:
+            conn.close()
+    except FileNotFoundError:
+        row = {"nrows": 0, "assigned": 0}
+        est = 0.0
+    except sqlite3.OperationalError:
+        row = {"nrows": 0, "assigned": 0}
+        est = 0.0
+    stats = {
+        "nrows": int(row["nrows"] or 0) if row else 0,
+        "assigned": int(row["assigned"] or 0) if row else 0,
+        "est_profit": est,
+    }
+    return templates.TemplateResponse(
+        request,
+        "partials/my_routes_summary.html",
+        {"stats": stats},
+    )
+
+
+@router.post("/routes/add", response_class=HTMLResponse)
+def api_routes_add(
+    request: Request,
+    hub_iata: str = Form(""),
+    destination_iata: str = Form(""),
+    aircraft: str = Form(""),
+    num_assigned: int = Form(1),
+    notes: str = Form(""),
+):
+    msg: str | None = None
+    try:
+        conn = get_db()
+        try:
+            hub = fetch_one(
+                conn,
+                "SELECT id FROM airports WHERE UPPER(TRIM(iata)) = UPPER(TRIM(?)) LIMIT 1",
+                [hub_iata.strip()],
+            )
+            dest = fetch_one(
+                conn,
+                "SELECT id FROM airports WHERE UPPER(TRIM(iata)) = UPPER(TRIM(?)) LIMIT 1",
+                [destination_iata.strip()],
+            )
+            ac = fetch_one(
+                conn,
+                "SELECT id FROM aircraft WHERE LOWER(TRIM(shortname)) = LOWER(TRIM(?)) LIMIT 1",
+                [aircraft.strip()],
+            )
+            if not hub:
+                msg = "Unknown hub IATA."
+            elif not dest:
+                msg = "Unknown destination IATA."
+            elif not ac:
+                msg = "Unknown aircraft shortname."
+            else:
+                n = int(num_assigned) if num_assigned else 1
+                n = max(1, min(999, n))
+                conn.execute(
+                    """
+                    INSERT INTO my_routes (origin_id, dest_id, aircraft_id, num_assigned, notes, updated_at)
+                    VALUES (?, ?, ?, ?, ?, datetime('now'))
+                    ON CONFLICT(origin_id, dest_id, aircraft_id) DO UPDATE SET
+                        num_assigned = excluded.num_assigned,
+                        notes = COALESCE(excluded.notes, my_routes.notes),
+                        updated_at = datetime('now')
+                    """,
+                    (
+                        int(hub["id"]),
+                        int(dest["id"]),
+                        int(ac["id"]),
+                        n,
+                        notes.strip() or None,
+                    ),
+                )
+                conn.commit()
+        finally:
+            conn.close()
+    except FileNotFoundError:
+        msg = "Database not found."
+    except sqlite3.OperationalError:
+        msg = "Database missing my_routes table — run extract or upgrade schema."
+
+    try:
+        conn = get_db()
+        try:
+            routes = _my_routes_rows(conn)
+        finally:
+            conn.close()
+    except FileNotFoundError:
+        routes = []
+
+    ctx: dict = {"routes": routes}
+    if msg:
+        ctx["flash_err"] = msg
+    else:
+        ctx["flash"] = "Saved route assignment."
+    return templates.TemplateResponse(request, "partials/my_routes_inventory.html", ctx)
+
+
+@router.post("/routes/delete", response_class=HTMLResponse)
+def api_routes_delete(request: Request, my_route_id: int = Form(...)):
+    try:
+        conn = get_db()
+        try:
+            conn.execute("DELETE FROM my_routes WHERE id = ?", (int(my_route_id),))
+            conn.commit()
+        finally:
+            conn.close()
+    except FileNotFoundError:
+        return templates.TemplateResponse(
+            request,
+            "partials/my_routes_inventory.html",
+            {"routes": [], "flash_err": "Database not found."},
+        )
+
+    try:
+        conn = get_db()
+        try:
+            routes = _my_routes_rows(conn)
+        finally:
+            conn.close()
+    except FileNotFoundError:
+        routes = []
+    return templates.TemplateResponse(
+        request,
+        "partials/my_routes_inventory.html",
+        {"routes": routes, "flash": "Removed route row."},
+    )
+
+
+@router.get("/routes/json")
+def api_routes_json() -> list[dict]:
+    try:
+        conn = get_db()
+        try:
+            rows = _my_routes_rows(conn)
+        finally:
+            conn.close()
+    except FileNotFoundError:
+        return []
+    return [
+        {
+            "id": r["id"],
+            "hub": r["hub"],
+            "destination": r["destination"],
+            "aircraft": r["aircraft"],
+            "num_assigned": r["num_assigned"],
+            "notes": r["notes"],
+            "profit_per_ac_day": r["profit_per_ac_day"],
+            "distance_km": r["distance_km"],
+        }
+        for r in rows
+    ]

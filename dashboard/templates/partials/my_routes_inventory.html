@@ -1,0 +1,57 @@
+<div {% if flash_err %}data-routes-error="1"{% endif %}>
+    {% if flash %}
+    <p class="text-emerald-400 text-sm mb-4">{{ flash }}</p>
+    {% endif %}
+    {% if flash_err %}
+    <p class="text-red-400 text-sm mb-4">{{ flash_err }}</p>
+    {% endif %}
+
+    {% if not routes %}
+    <p class="text-gray-400">No saved routes. Add one below or run <code class="text-gray-500">python main.py routes import --file my_routes.csv</code>.</p>
+    {% else %}
+    <div class="overflow-x-auto rounded-lg border border-gray-700">
+        <table class="w-full text-sm">
+            <thead class="bg-gray-700 text-gray-300 text-xs uppercase tracking-wider">
+                <tr>
+                    <th class="text-left px-4 py-3">Hub</th>
+                    <th class="text-left px-4 py-3">Dest</th>
+                    <th class="text-left px-4 py-3">Aircraft</th>
+                    <th class="text-right px-4 py-3">#</th>
+                    <th class="text-right px-4 py-3">Profit/ac/d</th>
+                    <th class="text-right px-4 py-3">km</th>
+                    <th class="text-left px-4 py-3">Notes</th>
+                    <th class="text-right px-4 py-3"></th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-700">
+                {% for r in routes %}
+                <tr class="hover:bg-gray-800/80 transition-colors">
+                    <td class="px-4 py-3 font-mono text-emerald-400">{{ r.hub }}</td>
+                    <td class="px-4 py-3 font-mono">{{ r.destination }}</td>
+                    <td class="px-4 py-3 font-mono text-gray-400">{{ r.aircraft }}</td>
+                    <td class="px-4 py-3 text-right font-mono">{{ r.num_assigned }}</td>
+                    <td class="px-4 py-3 text-right font-mono {% if (r.profit_per_ac_day or 0) >= 0 %}text-emerald-400{% else %}text-red-400{% endif %}">
+                        {% if r.profit_per_ac_day is not none %}${{ "{:,.0f}".format(r.profit_per_ac_day or 0) }}{% else %}<span class="text-gray-600">—</span>{% endif %}
+                    </td>
+                    <td class="px-4 py-3 text-right font-mono text-gray-500 text-xs">
+                        {% if r.distance_km is not none %}{{ "{:,.0f}".format(r.distance_km or 0) }}{% else %}—{% endif %}
+                    </td>
+                    <td class="px-4 py-3 text-gray-500 max-w-[12rem] truncate" title="{{ r.notes or '' }}">{{ r.notes or '—' }}</td>
+                    <td class="px-4 py-3 text-right">
+                        <form hx-post="/api/routes/delete"
+                              hx-target="#routes-inventory"
+                              hx-swap="innerHTML"
+                              hx-confirm="Delete this route row?"
+                              hx-on::after-request="if (event.detail.successful) htmx.ajax('GET', '/api/routes/summary', { target: '#routes-summary', swap: 'innerHTML' })"
+                              class="inline">
+                            <input type="hidden" name="my_route_id" value="{{ r.id }}">
+                            <button type="submit" class="text-red-400 hover:text-red-300 text-xs underline-offset-2 hover:underline">Remove</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+</div>

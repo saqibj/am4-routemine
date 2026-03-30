@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% block title %}Overview{% endblock %}
+{% block content %}
+<h2 class="text-2xl font-bold mb-2">Overview</h2>
+<p class="text-gray-400 mb-6">Extraction snapshot from your SQLite database.</p>
+
+<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+    <div class="bg-gray-800 rounded-lg shadow-lg p-6 border border-gray-700">
+        <p class="text-gray-400 text-xs uppercase tracking-wider">Valid routes</p>
+        <p class="text-3xl font-bold font-mono text-emerald-400 mt-1">{{ "{:,}".format(stats.routes or 0) }}</p>
+    </div>
+    <div class="bg-gray-800 rounded-lg shadow-lg p-6 border border-gray-700">
+        <p class="text-gray-400 text-xs uppercase tracking-wider">Hubs (origins)</p>
+        <p class="text-3xl font-bold font-mono text-gray-100 mt-1">{{ "{:,}".format(stats.hubs or 0) }}</p>
+    </div>
+    <div class="bg-gray-800 rounded-lg shadow-lg p-6 border border-gray-700">
+        <p class="text-gray-400 text-xs uppercase tracking-wider">Aircraft types</p>
+        <p class="text-3xl font-bold font-mono text-gray-100 mt-1">{{ "{:,}".format(stats.aircraft or 0) }}</p>
+    </div>
+    <div class="bg-gray-800 rounded-lg shadow-lg p-6 border border-gray-700">
+        <p class="text-gray-400 text-xs uppercase tracking-wider">DB size</p>
+        <p class="text-2xl font-bold font-mono text-gray-100 mt-1">
+            {% if db_size_bytes is not none %}
+            {{ "{:,}".format(db_size_bytes // 1024) }} KB
+            {% else %}
+            —
+            {% endif %}
+        </p>
+        <p class="text-gray-500 text-xs mt-2">Last extract: {{ stats.last_extract or '—' }}</p>
+    </div>
+</div>
+
+<p class="text-xs text-gray-500 uppercase tracking-wider mb-2">Analysis</p>
+<div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-4 gap-3 mb-6">
+    <a href="/hub-explorer" class="bg-gray-800 hover:bg-gray-700 border border-gray-600 rounded-md px-3 py-2 text-center text-sm">Hub Explorer</a>
+    <a href="/aircraft" class="bg-gray-800 hover:bg-gray-700 border border-gray-600 rounded-md px-3 py-2 text-center text-sm">Aircraft</a>
+    <a href="/route-analyzer" class="bg-gray-800 hover:bg-gray-700 border border-gray-600 rounded-md px-3 py-2 text-center text-sm">Route Analyzer</a>
+    <a href="/fleet-planner" class="bg-gray-800 hover:bg-gray-700 border border-gray-600 rounded-md px-3 py-2 text-center text-sm">Fleet Planner</a>
+    <a href="/contributions" class="bg-gray-800 hover:bg-gray-700 border border-gray-600 rounded-md px-3 py-2 text-center text-sm">Contributions</a>
+    <a href="/heatmap" class="bg-gray-800 hover:bg-gray-700 border border-gray-600 rounded-md px-3 py-2 text-center text-sm">Heatmap</a>
+</div>
+<p class="text-xs text-gray-500 uppercase tracking-wider mb-2">My Airline</p>
+<div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-10">
+    <a href="/my-fleet" class="bg-gray-800 hover:bg-gray-700 border border-gray-600 rounded-md px-3 py-2 text-center text-sm">My Fleet</a>
+    <a href="/my-routes" class="bg-gray-800 hover:bg-gray-700 border border-gray-600 rounded-md px-3 py-2 text-center text-sm">My Routes</a>
+</div>
+
+<div class="grid grid-cols-1 xl:grid-cols-2 gap-8">
+    <div class="bg-gray-800 rounded-lg shadow-lg border border-gray-700 p-6">
+        <h3 class="text-lg font-semibold mb-4">Top 10 routes by profit / day</h3>
+        <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+                <thead class="bg-gray-700 text-gray-300 text-xs uppercase tracking-wider">
+                    <tr>
+                        <th class="text-left py-2 px-2">Hub</th>
+                        <th class="text-left py-2 px-2">Dest</th>
+                        <th class="text-left py-2 px-2">Aircraft</th>
+                        <th class="text-right py-2 px-2">Profit/day</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-700">
+                    {% for r in top_routes %}
+                    <tr class="hover:bg-gray-700 transition-colors">
+                        <td class="py-2 px-2 font-mono font-medium">{{ r.hub }}</td>
+                        <td class="py-2 px-2 font-mono">{{ r.destination }}</td>
+                        <td class="py-2 px-2 text-gray-400 font-mono">{{ r.aircraft }}</td>
+                        <td class="py-2 px-2 text-right font-mono {% if (r.profit_per_ac_day or 0) >= 0 %}text-emerald-400{% else %}text-red-400{% endif %}">${{ "{:,.0f}".format(r.profit_per_ac_day or 0) }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="bg-gray-800 rounded-lg shadow-lg border border-gray-700 p-6">
+        <h3 class="text-lg font-semibold mb-4">Top 5 hubs by average profit / day</h3>
+        <canvas id="overviewHubChart" class="w-full h-64"></canvas>
+        <script>
+            const octx = document.getElementById('overviewHubChart');
+            if (octx) {
+                new Chart(octx.getContext('2d'), {
+                    type: 'bar',
+                    data: {
+                        labels: {{ hub_chart_labels | tojson }},
+                        datasets: [{
+                            label: 'Avg profit/day ($)',
+                            data: {{ hub_chart_values | tojson }},
+                            backgroundColor: '#34d399',
+                            borderRadius: 4,
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        plugins: { legend: { labels: { color: '#9ca3af' } } },
+                        scales: {
+                            x: { ticks: { color: '#9ca3af' } },
+                            y: { ticks: { color: '#9ca3af', callback: v => '$' + Number(v).toLocaleString() } }
+                        }
+                    }
+                });
+            }
+        </script>
+    </div>
+</div>
+{% endblock %}

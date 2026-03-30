@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}My Routes{% endblock %}
+{% block content %}
+<h2 class="text-2xl font-bold mb-2">My Routes</h2>
+<p class="text-gray-400 mb-6">Hub–destination–aircraft assignments (<code class="text-gray-500">my_routes</code>). CSV: <code class="text-gray-500">hub,destination,aircraft,num_assigned,notes</code>. Profit columns use matching extracted <code class="text-gray-500">route_aircraft</code> when available.</p>
+
+<div id="routes-summary" class="mb-8"
+     hx-get="/api/routes/summary"
+     hx-trigger="load">
+</div>
+
+<div class="bg-gray-800 rounded-lg border border-gray-700 p-6 mb-8">
+    <h3 class="text-lg font-semibold mb-4">Add or update row</h3>
+    <form id="routes-add-form"
+          class="flex flex-wrap gap-4 items-end"
+          hx-post="/api/routes/add"
+          hx-target="#routes-inventory"
+          hx-swap="innerHTML"
+          hx-indicator="#routes-inv-spinner"
+          hx-on::after-request="if (event.detail.successful && event.detail.xhr.responseText.indexOf('data-routes-error') === -1) { document.getElementById('routes-add-form').reset(); htmx.ajax('GET', '/api/routes/summary', { target: '#routes-summary', swap: 'innerHTML' }); }">
+        <div>
+            <label class="block text-xs text-gray-400 mb-1">Hub (IATA)</label>
+            <input type="text" name="hub_iata" list="routes-airport-list" required placeholder="KHI"
+                   class="bg-gray-700 border border-gray-600 text-white rounded-md px-3 py-2 min-w-[8rem] font-mono uppercase">
+        </div>
+        <div>
+            <label class="block text-xs text-gray-400 mb-1">Destination (IATA)</label>
+            <input type="text" name="destination_iata" list="routes-airport-list" required placeholder="DXB"
+                   class="bg-gray-700 border border-gray-600 text-white rounded-md px-3 py-2 min-w-[8rem] font-mono uppercase">
+        </div>
+        <div>
+            <label class="block text-xs text-gray-400 mb-1">Aircraft</label>
+            <input type="text" name="aircraft" list="routes-ac-list" required placeholder="b738"
+                   class="bg-gray-700 border border-gray-600 text-white rounded-md px-3 py-2 min-w-[8rem] font-mono lowercase">
+            <datalist id="routes-ac-list">
+                {% for ac in aircraft %}
+                <option value="{{ ac.shortname }}">{{ ac.shortname }} — {{ ac.name }}</option>
+                {% endfor %}
+            </datalist>
+        </div>
+        <div>
+            <label class="block text-xs text-gray-400 mb-1">Num assigned</label>
+            <input type="number" name="num_assigned" value="1" min="1" max="999" step="1"
+                   class="bg-gray-700 border border-gray-600 text-white rounded-md px-3 py-2 w-24 font-mono">
+        </div>
+        <div>
+            <label class="block text-xs text-gray-400 mb-1">Notes</label>
+            <input type="text" name="notes" placeholder="Optional"
+                   class="bg-gray-700 border border-gray-600 text-white rounded-md px-3 py-2 min-w-[10rem]">
+        </div>
+        <button type="submit" class="bg-emerald-600 hover:bg-emerald-500 text-white rounded-md px-4 py-2 text-sm font-medium">
+            Save
+        </button>
+        <span id="routes-inv-spinner" class="htmx-indicator text-emerald-400 text-sm pb-2">Saving…</span>
+    </form>
+    <datalist id="routes-airport-list">
+        {% for ap in airports %}
+        <option value="{{ ap.iata }}">{{ ap.iata }} — {{ ap.name }}</option>
+        {% endfor %}
+    </datalist>
+</div>
+
+<div id="routes-inventory"
+     hx-get="/api/routes/inventory"
+     hx-trigger="load"
+     hx-indicator="#routes-inv-spinner">
+    <p class="text-gray-400">Loading…</p>
+</div>
+{% endblock %}

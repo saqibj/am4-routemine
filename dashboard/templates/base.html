@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AM4 RouteMine — {% block title %}Dashboard{% endblock %}</title>
+    <link rel="icon" href="/static/favicon.ico">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+    <script src="/static/js/app.js" defer></script>
+    <style>
+        [hx-indicator] .htmx-indicator { display: none; }
+        .htmx-request .htmx-indicator { display: inline-block; }
+    </style>
+    {% block extra_head %}{% endblock %}
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen flex">
+    <input type="checkbox" id="nav-toggle" class="peer sr-only" aria-label="Toggle menu">
+    <label for="nav-toggle" class="fixed top-4 left-4 z-50 lg:hidden flex items-center justify-center w-10 h-10 rounded-md bg-gray-700 border border-gray-600 text-emerald-400 cursor-pointer">
+        ☰
+    </label>
+
+    <nav class="fixed inset-y-0 left-0 z-40 w-64 bg-gray-800 border-r border-gray-700 p-4 space-y-2
+                -translate-x-full peer-checked:translate-x-0 transition-transform duration-200 lg:translate-x-0 lg:static lg:flex-shrink-0">
+        <h1 class="text-xl font-bold text-emerald-400 mb-6 pr-10">AM4 RouteMine</h1>
+        <a href="/" class="block px-3 py-2 rounded-md hover:bg-gray-700 text-gray-100">Overview</a>
+        <a href="/hub-explorer" class="block px-3 py-2 rounded-md hover:bg-gray-700">Hub Explorer</a>
+        <a href="/aircraft" class="block px-3 py-2 rounded-md hover:bg-gray-700">Aircraft</a>
+        <a href="/route-analyzer" class="block px-3 py-2 rounded-md hover:bg-gray-700">Route Analyzer</a>
+        <a href="/fleet-planner" class="block px-3 py-2 rounded-md hover:bg-gray-700">Fleet Planner</a>
+        <p class="text-xs text-gray-500 uppercase tracking-wider px-3 pt-4 pb-1">My Airline</p>
+        <a href="/my-fleet" class="block px-3 py-2 rounded-md hover:bg-gray-700">My Fleet</a>
+        <a href="/my-routes" class="block px-3 py-2 rounded-md hover:bg-gray-700">My Routes</a>
+        <a href="/contributions" class="block px-3 py-2 rounded-md hover:bg-gray-700">Contributions</a>
+        <a href="/heatmap" class="block px-3 py-2 rounded-md hover:bg-gray-700">Heatmap</a>
+        <div class="absolute bottom-4 left-4 right-4 text-xs text-gray-500">
+            DB: {{ db_name }}<br>
+            {{ route_count }} routes
+        </div>
+    </nav>
+
+    <label for="nav-toggle" class="fixed inset-0 bg-black/50 z-30 hidden peer-checked:block lg:hidden"></label>
+
+    <main class="flex-1 p-4 lg:p-6 overflow-auto pt-16 lg:pt-6 w-full min-w-0">
+        {% block content %}{% endblock %}
+    </main>
+</body>
+</html>

@@ -1,0 +1,32 @@
+<canvas id="{{ chart_id }}" class="w-full h-64 max-h-80"></canvas>
+<script>
+    (function() {
+        const id = {{ chart_id | tojson }};
+        const canvas = document.getElementById(id);
+        if (!canvas) return;
+        const prev = canvas.chartInstance;
+        if (prev) prev.destroy();
+        const ctx = canvas.getContext('2d');
+        canvas.chartInstance = new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: {{ labels | tojson }},
+                datasets: [{
+                    label: {{ label | tojson }},
+                    data: {{ values | tojson }},
+                    backgroundColor: '#34d399',
+                    borderRadius: 4,
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { labels: { color: '#9ca3af' } } },
+                scales: {
+                    x: { ticks: { color: '#9ca3af', maxRotation: 45, minRotation: 0 } },
+                    y: { ticks: { color: '#9ca3af', callback: v => '$' + Number(v).toLocaleString() } }
+                }
+            }
+        });
+    })();
+</script>

@@ -4,17 +4,18 @@ AM4 RouteMine — bulk route extraction CLI.
 
 Usage:
     python main.py extract --hubs KHI,DXB --mode easy --ci 200
-    python main.py extract --all-hubs --mode easy
     python main.py export --format csv --output ./exports/
     python main.py query --hub KHI --aircraft b738 --top 20
-    python main.py dashboard --db am4_data.db --port 8501
+    python main.py dashboard --db am4_data.db --port 8000
+    python main.py fleet import --file fleet.csv
+    python main.py routes import --file my_routes.csv
+    python main.py recommend --hub KHI --budget 500000000
 """
 
 from __future__ import annotations
 
 import argparse
 import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -104,21 +105,45 @@ def cmd_query(args: argparse.Namespace) -> None:
 
 
 def cmd_dashboard(args: argparse.Namespace) -> None:
+    import uvicorn
+
     os.environ["AM4_ROUTEMINE_DB"] = str(Path(args.db).resolve())
-    root = Path(__file__).resolve().parent
-    app = root / "dashboard" / "app.py"
-    cmd = [
-        sys.executable,
-        "-m",
-        "streamlit",
-        "run",
-        str(app),
-        "--server.port",
-        str(int(args.port)),
-        "--browser.gatherUsageStats",
-        "false",
-    ]
-    raise SystemExit(subprocess.call(cmd))
+    uvicorn.run(
+        "dashboard.server:app",
+        host=args.host,
+        port=int(args.port),
+        reload=True,
+    )
+
+
+def _add_db(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--db", type=str, default="am4_data.db", help="SQLite database path")
+
+
+def cmd_fleet(args: argparse.Namespace) -> None:
+    from commands.airline import fleet_export, fleet_import, fleet_list
+
+    if args.fleet_cmd == "import":
+        fleet_import(args.db, args.file)
+    elif args.fleet_cmd == "export":
+        fleet_export(args.db, args.output)
+    else:
+        fleet_list(args.db)
+
+
+def cmd_routes(args: argparse.Namespace) -> None:
+    from commands.airline import routes_export, routes_import
+
+    if args.routes_cmd == "import":
+        routes_import(args.db, args.file)
+    else:
+        routes_export(args.db, args.output)
+
+
+def cmd_recommend(args: argparse.Namespace) -> None:
+    from commands.airline import recommend
+
+    recommend(args.db, args.hub, args.budget, args.top)
 
 
 def main() -> None:
@@ -151,10 +176,46 @@ def main() -> None:
     q.add_argument("--db", type=str, default="am4_data.db")
     q.set_defaults(func=cmd_query)
 
-    dash = sub.add_parser("dashboard", help="Launch Streamlit dashboard")
+    dash = sub.add_parser("dashboard", help="Launch web dashboard")
     dash.add_argument("--db", type=str, default="am4_data.db")
-    dash.add_argument("--port", type=int, default=8501)
+    dash.add_argument("--port", type=int, default=8000)
+    dash.add_argument("--host", type=str, default="0.0.0.0")
     dash.set_defaults(func=cmd_dashboard)
+
+    fleet_p = sub.add_parser("fleet", help="My airline fleet table (my_fleet) CSV")
+    fleet_sp = fleet_p.add_subparsers(dest="fleet_cmd", required=True)
+    f_imp = fleet_sp.add_parser("import", help="Import fleet.csv: shortname,count,notes")
+    _add_db(f_imp)
+    f_imp.add_argument("--file", type=str, required=True)
+    f_exp = fleet_sp.add_parser("export", help="Export my_fleet to CSV")
+    _add_db(f_exp)
+    f_exp.add_argument("--output", type=str, required=True)
+    f_lst = fleet_sp.add_parser("list", help="Print my_fleet (TSV)")
+    _add_db(f_lst)
+    fleet_p.set_defaults(func=cmd_fleet)
+
+    routes_p = sub.add_parser("routes", help="My airline routes table (my_routes) CSV")
+    routes_sp = routes_p.add_subparsers(dest="routes_cmd", required=True)
+    r_imp = routes_sp.add_parser(
+        "import",
+        help="Import my_routes.csv: hub,destination,aircraft,num_assigned,notes",
+    )
+    _add_db(r_imp)
+    r_imp.add_argument("--file", type=str, required=True)
+    r_exp = routes_sp.add_parser("export", help="Export my_routes to CSV")
+    _add_db(r_exp)
+    r_exp.add_argument("--output", type=str, required=True)
+    routes_p.set_defaults(func=cmd_routes)
+
+    rec = sub.add_parser(
+        "recommend",
+        help="Recommend aircraft at a hub within budget (from extracted routes)",
+    )
+    _add_db(rec)
+    rec.add_argument("--hub", type=str, required=True, help="Origin hub IATA")
+    rec.add_argument("--budget", type=int, required=True, help="Max aircraft cost ($)")
+    rec.add_argument("--top", type=int, default=25, help="Max rows to print")
+    rec.set_defaults(func=cmd_recommend)
 
     args = parser.parse_args()
     args.func(args)

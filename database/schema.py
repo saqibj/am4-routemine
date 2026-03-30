@@ -118,7 +118,78 @@ CREATE INDEX IF NOT EXISTS idx_ra_profit ON route_aircraft(profit_per_ac_day DES
 CREATE INDEX IF NOT EXISTS idx_ra_origin_ac ON route_aircraft(origin_id, aircraft_id);
 CREATE INDEX IF NOT EXISTS idx_ra_valid_profit ON route_aircraft(is_valid, profit_per_ac_day DESC);
 
-CREATE VIEW IF NOT EXISTS v_best_routes AS
+DROP TABLE IF EXISTS fleet_route_assignment;
+DROP TABLE IF EXISTS fleet_aircraft;
+
+CREATE TABLE IF NOT EXISTS my_fleet (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    aircraft_id     INTEGER NOT NULL UNIQUE,
+    quantity        INTEGER NOT NULL DEFAULT 1 CHECK (quantity >= 1 AND quantity <= 999),
+    notes           TEXT,
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (aircraft_id) REFERENCES aircraft(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_my_fleet_ac ON my_fleet(aircraft_id);
+
+CREATE TABLE IF NOT EXISTS my_routes (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    origin_id       INTEGER NOT NULL,
+    dest_id         INTEGER NOT NULL,
+    aircraft_id     INTEGER NOT NULL,
+    num_assigned    INTEGER NOT NULL DEFAULT 1 CHECK (num_assigned >= 1 AND num_assigned <= 999),
+    notes           TEXT,
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (origin_id) REFERENCES airports(id),
+    FOREIGN KEY (dest_id) REFERENCES airports(id),
+    FOREIGN KEY (aircraft_id) REFERENCES aircraft(id),
+    UNIQUE(origin_id, dest_id, aircraft_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_my_routes_origin ON my_routes(origin_id);
+CREATE INDEX IF NOT EXISTS idx_my_routes_dest ON my_routes(dest_id);
+CREATE INDEX IF NOT EXISTS idx_my_routes_ac ON my_routes(aircraft_id);
+
+DROP VIEW IF EXISTS v_my_fleet;
+CREATE VIEW v_my_fleet AS
+SELECT
+    mf.id,
+    mf.aircraft_id,
+    mf.quantity,
+    mf.notes,
+    mf.created_at,
+    mf.updated_at,
+    ac.shortname,
+    ac.name AS ac_name,
+    ac.type AS ac_type,
+    ac.cost
+FROM my_fleet mf
+JOIN aircraft ac ON mf.aircraft_id = ac.id;
+
+DROP VIEW IF EXISTS v_my_routes;
+CREATE VIEW v_my_routes AS
+SELECT
+    mr.id,
+    mr.origin_id,
+    mr.dest_id,
+    mr.aircraft_id,
+    mr.num_assigned,
+    mr.notes,
+    mr.created_at,
+    mr.updated_at,
+    ho.iata AS hub,
+    hd.iata AS destination,
+    ac.shortname AS aircraft,
+    ac.name AS ac_name
+FROM my_routes mr
+JOIN airports ho ON mr.origin_id = ho.id
+JOIN airports hd ON mr.dest_id = hd.id
+JOIN aircraft ac ON mr.aircraft_id = ac.id;
+
+DROP VIEW IF EXISTS v_best_routes;
+CREATE VIEW v_best_routes AS
 SELECT
     a_orig.iata AS hub,
     a_dest.iata AS destination,
@@ -130,6 +201,7 @@ SELECT
     ra.profit_per_trip,
     ra.trips_per_day,
     ra.profit_per_ac_day,
+    ra.income_per_ac_day,
     ra.contribution,
     ra.flight_time_hrs,
     ra.needs_stopover,

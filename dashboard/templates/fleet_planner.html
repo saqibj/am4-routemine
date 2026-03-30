@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Fleet Planner{% endblock %}
+{% block content %}
+<h2 class="text-2xl font-bold mb-2">Fleet planner</h2>
+<p class="text-gray-400 mb-6">Aircraft under budget at this hub, ranked by average route profit. Days to break-even = cost ÷ avg daily profit.</p>
+
+<form id="fleet-filters" class="flex flex-wrap gap-4 mb-6 items-end">
+    <div>
+        <label class="block text-xs text-gray-400 mb-1">Hub</label>
+        <select name="hub"
+                hx-get="/api/fleet-plan"
+                hx-target="#fleet-results"
+                hx-include="#fleet-filters"
+                hx-indicator="#fleet-spinner"
+                class="bg-gray-700 border border-gray-600 rounded-md px-3 py-2 text-white min-w-[8rem] font-mono">
+            <option value="">Select…</option>
+            {% for h in hubs %}
+            <option value="{{ h }}">{{ h }}</option>
+            {% endfor %}
+        </select>
+    </div>
+    <div>
+        <label class="block text-xs text-gray-400 mb-1">Budget ($)</label>
+        <input type="number" name="budget" value="200000000" step="1000000" min="0"
+               hx-get="/api/fleet-plan"
+               hx-target="#fleet-results"
+               hx-trigger="change delay:400ms"
+               hx-include="#fleet-filters"
+               hx-indicator="#fleet-spinner"
+               class="bg-gray-700 border border-gray-600 rounded-md px-3 py-2 text-white w-44 font-mono">
+    </div>
+    <div>
+        <label class="block text-xs text-gray-400 mb-1">Top N</label>
+        <select name="top_n"
+                hx-get="/api/fleet-plan"
+                hx-target="#fleet-results"
+                hx-include="#fleet-filters"
+                hx-indicator="#fleet-spinner"
+                class="bg-gray-700 border border-gray-600 rounded-md px-3 py-2 text-white">
+            {% for n in [5, 10, 15, 25, 50] %}
+            <option value="{{ n }}" {% if n == 15 %}selected{% endif %}>{{ n }}</option>
+            {% endfor %}
+        </select>
+    </div>
+    <span id="fleet-spinner" class="htmx-indicator text-emerald-400 text-sm pb-2">Loading…</span>
+</form>
+
+<div id="fleet-results">
+    <p class="text-gray-400">Select a hub and budget.</p>
+</div>
+{% endblock %}
